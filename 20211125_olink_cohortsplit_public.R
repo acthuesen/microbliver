@@ -1,3 +1,4 @@
+# Updated 05 May 2022
 # WHAT THIS DOES ----
 # - Split o-link data by cohort
 # - convert to wide format
@@ -5,14 +6,16 @@
 # - Add in timepoint/sample variables
 
 # Note that the o-link qc has already been done before this
-# Make sure you're working on the "Global QC" version of the data
+
+# This script is updated for batch 3
+
 
 # DEPENDENCIES ----
 library(tidyverse)
 library(readxl)
 
 # GET DATA ----
-# replace PATH with the actual path
+# here's data 
 olinkdat <- read.csv('PATH/Olink/Global_QC/QC_olink.csv')
 
 # CLEAN UP COHORTS ----
@@ -25,12 +28,6 @@ olinkdat <- olinkdat %>%
          cohort != 'HOL-F', 
          cohort != 'Bridge')
 
-# TIEP and TIPSKC/ are spelling errors. Correct them. 
-olinkdat <- olinkdat %>%
-  mutate(cohort = case_when(cohort == 'TIEP' ~ 'TIPS',
-                            cohort == 'TIPSKC/' ~ 'TIPS',
-                            TRUE ~ cohort))
-
 # IDs ---- 
 # atm, id is a concatenated string of cohort and id (and sometimes sample info)
 # cohort already exists as a variable, so take that out
@@ -39,14 +36,19 @@ olinkdat <- olinkdat %>%
 # following matches non-capturing group of letters at beginning of string
 # gsub with nothing to make newid
 olinkdat <- olinkdat %>%
-  mutate(newid = gsub("^(?:[A-Z]+)", "", SampleID))
+  mutate(newid = gsub("^(?:[a-zA-Z]+)", "", SampleID))
+
+## ADDED IN THIS VERSION: added removal of leading _ (PK and AHEP samples)
+olinkdat <- olinkdat %>%
+  mutate(newid = gsub("^_", "", newid))
 
 # for HOL samples, reverse the newid order, since they're reversed
 olinkdat <- olinkdat %>%
   mutate(newid = case_when(cohort == 'HOL' ~ str_replace(newid,"([^-]+)-([^-]+)","\\2-\\1"),
                            TRUE ~ newid))
-  
+
 # separate newid to get sample/time info
+## IN THIS VERSION: nb, this also separates the IID from the FID-IID in PK
 olinkdat <- olinkdat %>%
   separate(newid, into=c('newid','temp_sampleinfo'), extra='merge', sep='-')
 
@@ -67,7 +69,10 @@ olinkdat <- olinkdat %>%
 # pad the id str so that it's 3 digits (4 for ALD)
 olinkdat <- olinkdat %>%
   mutate(newid = case_when(cohort == 'ALD' ~ str_pad(newid, width=4, side='left', '0'),
-                           cohort != 'ALD' ~ str_pad(newid, width=3, side='left', '0')))
+                           cohort == 'SIP' ~ str_pad(newid, width=5, side='left', '0'),
+                           cohort == 'PK' | cohort == 'AHEP' ~ newid,
+                           cohort != 'ALD' | cohort != 'SIP' | cohort != 'PK' | cohort != 'AHEP' ~ 
+                             str_pad(newid, width=3, side='left', '0')))
 
 # and finally concat the newid and cohort
 olinkdat <- olinkdat %>%
@@ -78,6 +83,8 @@ olinkdat <- olinkdat %>%
 # As the only cohort, ALCO has BOTH timepoints and sampletype
 # The following have only timepoints: HCOT, HOL, MLGB, PRF, ROC, RFX
 # The following have no sample variables: ALD, HP
+## CHANGED IN THIS VERSION: AHEP, PK, ProD, SIP all also have no sample variables
+## However, for both PK and AHEP something is delineated by a hyphen which needs to be added back in
 olinkdat <- olinkdat %>%
   mutate(sampletype = NA_character_,
          timepoint = NA_character_) %>%
@@ -94,6 +101,8 @@ olinkdat <- olinkdat %>%
                                  cohort == 'RDC' | 
                                  cohort == 'RFX' ~ temp_sampleinfo,
                                TRUE ~ timepoint)) %>%
+  mutate(otherinfo = case_when(cohort == 'AHEP' | 
+                                       cohort == 'PK' ~ temp_sampleinfo)) %>%
   select(-temp_sampleinfo)
 
 # cleanup timepoint notation for HCOT samples
@@ -107,22 +116,24 @@ olinkdat <- olinkdat %>%
 
 # CBMR ID ----
 olinkdat <- olinkdat %>%
-  unite('CBMRID', c(newid,sampletype,timepoint), sep='-', na.rm=T, remove = F)
+  unite('CBMRID', c(newid,sampletype,timepoint,otherinfo), sep='-', na.rm=T, remove = F) %>%
+  select(-otherinfo)
 
 # WIDE FORMAT ----
 olinkdat_wide <- olinkdat %>%
-  select(-c(OlinkID, UniProt, MissingFreq, Panel, Panel_Version, PlateID, QC_Warning, LOD, NPX, Normalization, Index, no_missing_obs, total_obs, propmissing, keep_assay)) %>%
-  pivot_wider(names_from = Assay, values_from = corrected_NPX)
+  select(-c(OlinkID, UniProt, MissingFreq, Panel, Panel_Version, PlateID, QC_Warning, LOD, corrected_NPX, Normalization, Index, no_missing_obs, total_obs, MissingProp)) %>%
+  pivot_wider(names_from = Assay, values_from = NPX)
 
 # SPLIT BY COHORT ----
- setwd('PATH/Olink/Global_QC/split_cohorts/') # this is where your output goes
+setwd('PATH/Olink/Global_QC/split_cohorts/') # this is where your output goes
 
 olinkdat_wide %>%
   group_split(cohort) %>%
   sapply(., function (x) 
-    write.csv(x, file=paste0("QC_Olink", unique(x$cohort), "_wide.csv"), row.names=F))
+    write.table(x, file=paste0("QC_Olink", unique(x$cohort), "_wide.tsv"), row.names=F, sep='\t'))
 
 olinkdat %>%
   group_split(cohort) %>%
   sapply(., function (x) 
-    write.csv(x, file=paste0("QC_Olink", unique(x$cohort), "_long.csv"), row.names=F))
+    write.table(x, file=paste0("QC_Olink", unique(x$cohort), "_long.tsv"), row.names=F, sep='\t'))
+
